@@ -1,0 +1,111 @@
+name: Compose Newsletter
+
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: Newsletter month in YYYY-MM format
+        required: true
+        type: string
+      mode:
+        description: Compose from selected Issues or bypass editorial selection
+        required: true
+        default: editorial
+        type: choice
+        options:
+          - editorial
+          - automatic
+      ai_drafting:
+        description: Generate structured AI-assisted story drafts
+        required: true
+        default: false
+        type: boolean
+      ai_failure_policy:
+        description: Stop on AI failure or keep deterministic fallback text
+        required: true
+        default: fail
+        type: choice
+        options:
+          - fail
+          - fallback
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: compose-newsletter-${{ inputs.month }}-${{ inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build composer
+        run: cargo build --release
+
+      - name: Restore AI draft cache
+        if: ${{ inputs.ai_drafting }}
+        uses: actions/cache@v4
+        with:
+          path: data/ai-drafts
+          key: rust-web-ai-drafts-${{ inputs.month }}-${{ github.run_id }}
+          restore-keys: |
+            rust-web-ai-drafts-${{ inputs.month }}-
+
+      - name: Collect source history for automatic mode
+        if: ${{ inputs.mode == 'automatic' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CRATES_IO_USER_AGENT: rust-web-digest/0.7 (+${{ github.server_url }}/${{ github.repository }})
+          NEWSLETTER_MONTH: ${{ inputs.month }}
+        run: |
+          TARGET_START="$(date -u -d "${NEWSLETTER_MONTH}-01 -15 days" +%s)"
+          NOW="$(date -u +%s)"
+          if [ "$TARGET_START" -ge "$NOW" ]; then
+            echo "The requested month must have started before the current time." >&2
+            exit 1
+          fi
+          SINCE_HOURS="$(( (NOW - TARGET_START) / 3600 + 24 ))"
+
+          ./target/release/rust-web-digest collect \
+            --since-hours "$SINCE_HOURS" \
+            --output data/candidates.jsonl
+
+      - name: Compose newsletter
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          NEWSLETTER_MONTH: ${{ inputs.month }}
+          COMPOSE_MODE: ${{ inputs.mode }}
+          AI_DRAFTING: ${{ inputs.ai_drafting }}
+          AI_FAILURE_POLICY: ${{ inputs.ai_failure_policy }}
+        run: |
+          ARGS=(
+            compose
+            --month "$NEWSLETTER_MONTH"
+            --mode "$COMPOSE_MODE"
+          )
+
+          if [ "$AI_DRAFTING" = "true" ]; then
+            ARGS+=(--ai --ai-failure-policy "$AI_FAILURE_POLICY")
+          fi
+
+          ./target/release/rust-web-digest "${ARGS[@]}"
+
+      - name: Upload composed newsletter
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-web-digest-${{ inputs.month }}-${{ inputs.mode }}
+          path: |
+            content/issues/${{ inputs.month }}.md
+            data/newsletters/${{ inputs.month }}.manifest.json
+          if-no-files-found: error

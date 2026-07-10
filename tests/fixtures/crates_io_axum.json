@@ -1,0 +1,22 @@
+{
+  "crate": {
+    "id": "axum",
+    "name": "axum"
+  },
+  "versions": [
+    {
+      "id": 7001,
+      "num": "1.2.3",
+      "created_at": "2026-07-10T08:00:00Z",
+      "updated_at": "2026-07-10T08:00:00Z",
+      "yanked": false
+    },
+    {
+      "id": 6990,
+      "num": "1.2.2",
+      "created_at": "2026-06-20T08:00:00Z",
+      "updated_at": "2026-06-20T08:00:00Z",
+      "yanked": false
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+[collection]
+github_api_url = "https://api.github.com"
+github_max_pages = 10
+request_timeout_seconds = 30
+
+[security]
+enabled = true
+osv_api_url = "https://api.osv.dev"
+
+[crates_io]
+enabled = true
+api_url = "https://crates.io/api/v1"
+web_url = "https://crates.io/crates"
+user_agent_env = "CRATES_IO_USER_AGENT"
+request_delay_ms = 1100
+
+[reconciliation]
+article_window_days = 14
+comment_on_story_update = true
+
+[newsletter]
+title_prefix = "Rust Web Monthly"
+intro = "A monthly briefing on Rust web development: frameworks, async runtimes, networking, databases, security, and full-stack tooling."
+output_dir = "content/issues"
+manifest_dir = "data/newsletters"
+release_tag_prefix = "digest"
+release_name_prefix = "Rust Web Digest"
+release_asset_name_prefix = "rust-web-digest"
+commit_message_prefix = "publish digest"
+sync_release_tag = true
+category_order = [
+  "frameworks",
+  "runtime",
+  "networking",
+  "databases",
+  "security",
+  "fullstack",
+  "articles",
+  "tooling",
+  "uncategorized",
+]
+
+
+[ai]
+provider = "openai"
+api_url = "https://api.openai.com/v1/responses"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-5.6"
+cache_dir = "data/ai-drafts"
+request_timeout_seconds = 120
+max_retries = 5
+initial_backoff_ms = 1000
+max_source_chars = 16000
+
+[publishing]
+candidate_label = "candidate"
+new_status_label = "status:new"
+additional_status_labels = []
+watch_status_label = "status:watch"
+selected_status_label = "status:selected"
+rejected_status_label = "status:rejected"
+monthly_parent_label = "editorial:month"
+monthly_parent_title_prefix = "Rust Web Monthly"
+ensure_labels = true
+ensure_milestones = true
+github_max_pages = 10
+
+# Frameworks
+
+[[projects]]
+id = "axum"
+name = "Axum"
+category = "frameworks"
+github = "tokio-rs/axum"
+crates = ["axum", "axum-core"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "actix-web"
+name = "Actix Web"
+category = "frameworks"
+github = "actix/actix-web"
+crates = ["actix-web"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "poem"
+name = "Poem"
+category = "frameworks"
+github = "poem-web/poem"
+crates = ["poem", "poem-openapi"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "rocket"
+name = "Rocket"
+category = "frameworks"
+github = "rwf2/Rocket"
+crates = ["rocket"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "salvo"
+name = "Salvo"
+category = "frameworks"
+github = "salvo-rs/salvo"
+crates = ["salvo"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "loco"
+name = "Loco"
+category = "frameworks"
+github = "loco-rs/loco"
+crates = ["loco-rs"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "pavex"
+name = "Pavex"
+category = "frameworks"
+github = "LukeMathWalker/pavex"
+crates = ["pavex"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+# Runtime, HTTP, RPC, and networking foundations
+
+[[projects]]
+id = "rama"
+name = "Rama"
+category = "networking"
+github = "plabayo/rama"
+crates = ["rama"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "tokio"
+name = "Tokio"
+category = "runtime"
+github = "tokio-rs/tokio"
+crates = ["tokio"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "hyper"
+name = "Hyper"
+category = "networking"
+github = "hyperium/hyper"
+crates = ["hyper"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "tower-http"
+name = "Tower HTTP"
+category = "networking"
+github = "tower-rs/tower-http"
+crates = ["tower-http"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "reqwest"
+name = "Reqwest"
+category = "networking"
+github = "seanmonstar/reqwest"
+crates = ["reqwest"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "rustls"
+name = "Rustls"
+category = "security"
+github = "rustls/rustls"
+crates = ["rustls"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "tonic"
+name = "Tonic / gRPC Rust"
+category = "networking"
+github = "grpc/grpc-rust"
+crates = ["tonic"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+# Databases
+
+[[projects]]
+id = "sqlx"
+name = "SQLx"
+category = "databases"
+github = "transact-rs/sqlx"
+crates = ["sqlx", "sqlx-core"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "sea-orm"
+name = "SeaORM"
+category = "databases"
+github = "SeaQL/sea-orm"
+crates = ["sea-orm"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "diesel"
+name = "Diesel"
+category = "databases"
+github = "diesel-rs/diesel"
+crates = ["diesel"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+# Full-stack and browser-facing Rust frameworks
+
+[[projects]]
+id = "leptos"
+name = "Leptos"
+category = "fullstack"
+github = "leptos-rs/leptos"
+crates = ["leptos"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "dioxus"
+name = "Dioxus"
+category = "fullstack"
+github = "DioxusLabs/dioxus"
+crates = ["dioxus"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+[[projects]]
+id = "yew"
+name = "Yew"
+category = "fullstack"
+github = "yewstack/yew"
+crates = ["yew"]
+[projects.collect]
+releases = true
+security = true
+crate_releases = true
+
+# RSS/Atom feeds are intentionally explicit. Add project-maintained or trusted
+# engineering feeds as the editorial scope becomes clearer.
+#
+# [[feeds]]
+# id = "rust-blog"
+# name = "Rust Blog"
+# url = "https://blog.rust-lang.org/feed.xml"
+# category = "articles"
+# required_any = ["web", "http", "async", "network", "tls"]

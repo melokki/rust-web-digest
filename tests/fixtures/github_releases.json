@@ -1,0 +1,22 @@
+[
+  {
+    "id": 101,
+    "html_url": "https://github.com/tokio-rs/axum/releases/tag/axum-v1.2.3",
+    "tag_name": "axum-v1.2.3",
+    "name": "axum 1.2.3",
+    "body": "A useful release\n\nMore details.",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-07-09T12:00:00Z"
+  },
+  {
+    "id": 102,
+    "html_url": "https://github.com/tokio-rs/axum/releases/tag/axum-v1.3.0-rc.1",
+    "tag_name": "axum-v1.3.0-rc.1",
+    "name": null,
+    "body": "Release candidate",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-07-10T12:00:00Z"
+  }
+]

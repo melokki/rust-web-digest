@@ -1,0 +1,57 @@
+name: Collect Rust Web Candidates
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: rust-web-digest-collection
+  cancel-in-progress: false
+
+jobs:
+  collect-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build collector
+        run: cargo build --release
+
+      - name: Collect candidates
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CRATES_IO_USER_AGENT: rust-web-digest/0.7 (+${{ github.server_url }}/${{ github.repository }})
+        run: |
+          ./target/release/rust-web-digest collect \
+            --since-hours 360 \
+            --output data/candidates.jsonl
+
+      - name: Publish candidate issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          ./target/release/rust-web-digest publish-issues \
+            --since-hours 96 \
+            --input data/candidates.jsonl
+
+      - name: Sync monthly editorial workspaces
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          CURRENT_MONTH="$(date -u +%Y-%m)"
+          PREVIOUS_MONTH="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
+
+          ./target/release/rust-web-digest editorial sync-month --month "$CURRENT_MONTH"
+          ./target/release/rust-web-digest editorial sync-month --month "$PREVIOUS_MONTH"

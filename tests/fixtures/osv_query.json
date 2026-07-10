@@ -1,0 +1,18 @@
+{
+  "vulns": [
+    {
+      "id": "RUSTSEC-2026-0001",
+      "summary": "Example vulnerability",
+      "details": "Example advisory details.",
+      "published": "2026-07-09T00:00:00Z",
+      "modified": "2026-07-09T12:00:00Z",
+      "aliases": ["GHSA-xxxx-yyyy-zzzz"],
+      "references": [
+        {
+          "type": "ADVISORY",
+          "url": "https://rustsec.org/advisories/RUSTSEC-2026-0001.html"
+        }
+      ]
+    }
+  ]
+}

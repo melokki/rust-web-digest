@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+  <channel>
+    <title>Example Rust Blog</title>
+    <link>https://example.com</link>
+    <description>Example feed</description>
+    <item>
+      <title>Building services with Axum</title>
+      <link>https://example.com/axum-services</link>
+      <guid>post-1</guid>
+      <pubDate>Thu, 09 Jul 2026 10:00:00 GMT</pubDate>
+      <description>A Rust web service article.</description>
+    </item>
+    <item>
+      <title>Gardening notes</title>
+      <link>https://example.com/garden</link>
+      <guid>post-2</guid>
+      <pubDate>Thu, 09 Jul 2026 11:00:00 GMT</pubDate>
+      <description>Tomatoes and soil.</description>
+    </item>
+  </channel>
+</rss>

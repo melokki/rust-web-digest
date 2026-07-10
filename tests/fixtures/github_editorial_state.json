@@ -1,0 +1,14 @@
+{
+  "issues": [
+    {
+      "body": "## Candidate\n\n<!-- rust-web-digest:candidate-id:github-release:tokio-rs/axum:42 -->"
+    }
+  ],
+  "labels": [
+    { "name": "candidate" },
+    { "name": "status:new" }
+  ],
+  "milestones": [
+    { "number": 7, "title": "July 2026" }
+  ]
+}

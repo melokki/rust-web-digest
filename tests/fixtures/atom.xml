@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Atom Feed</title>
+  <id>https://example.org/</id>
+  <updated>2026-07-10T08:00:00Z</updated>
+  <entry>
+    <title>Tokio networking changes</title>
+    <id>tag:example.org,2026:tokio-networking</id>
+    <link href="https://example.org/tokio-networking" />
+    <updated>2026-07-10T08:00:00Z</updated>
+    <summary>Changes relevant to Rust web servers.</summary>
+  </entry>
+</feed>
