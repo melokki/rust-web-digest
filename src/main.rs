@@ -437,6 +437,13 @@ async fn publish_issues(
     Ok(())
 }
 
+fn ai_model_override(config: &AppConfig) -> Option<String> {
+    env::var(&config.ai.model_env)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 async fn build_issue_ai_drafts(
     config: &AppConfig,
     client: &Client,
@@ -494,7 +501,8 @@ async fn build_issue_ai_drafts(
         }],
     };
 
-    let generator = OpenAiDraftGenerator::new(client, &config.ai, &api_key);
+    let model = ai_model_override(config);
+    let generator = OpenAiDraftGenerator::new(client, &config.ai, &api_key, model);
     let cache_root = Path::new(&config.ai.cache_dir).join("issues");
     let report = enrich_document(
         &mut document,
@@ -740,7 +748,8 @@ async fn compose(
             .timeout(StdDuration::from_secs(config.ai.request_timeout_seconds))
             .build()
             .context("failed to build AI HTTP client")?;
-        let generator = OpenAiDraftGenerator::new(&ai_client, &config.ai, &api_key);
+        let model = ai_model_override(&config);
+        let generator = OpenAiDraftGenerator::new(&ai_client, &config.ai, &api_key, model);
         let cache_dir = PathBuf::from(&config.ai.cache_dir);
         let report = enrich_document(
             &mut document,

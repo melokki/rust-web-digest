@@ -61,6 +61,8 @@ pub struct FeedConfig {
     pub project_id: Option<String>,
     #[serde(default)]
     pub required_any: Vec<String>,
+    #[serde(default)]
+    pub excluded_any: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -254,8 +256,8 @@ pub struct AiConfig {
     pub api_url: String,
     #[serde(default = "default_ai_api_key_env")]
     pub api_key_env: String,
-    #[serde(default = "default_ai_model")]
-    pub model: String,
+    #[serde(default = "default_ai_model_env")]
+    pub model_env: String,
     #[serde(default = "default_ai_cache_dir")]
     pub cache_dir: String,
     #[serde(default = "default_ai_request_timeout_seconds")]
@@ -274,7 +276,7 @@ impl Default for AiConfig {
             provider: default_ai_provider(),
             api_url: default_ai_api_url(),
             api_key_env: default_ai_api_key_env(),
-            model: default_ai_model(),
+            model_env: default_ai_model_env(),
             cache_dir: default_ai_cache_dir(),
             request_timeout_seconds: default_ai_request_timeout_seconds(),
             max_retries: default_ai_max_retries(),
@@ -404,6 +406,12 @@ impl AppConfig {
                 bail!("duplicate feed id: {}", feed.id);
             }
             validate_http_url(&format!("feed '{}' URL", feed.id), &feed.url)?;
+            for keyword in &feed.required_any {
+                validate_non_empty(&format!("feed '{}' required_any keyword", feed.id), keyword)?;
+            }
+            for keyword in &feed.excluded_any {
+                validate_non_empty(&format!("feed '{}' excluded_any keyword", feed.id), keyword)?;
+            }
 
             if let Some(project_id) = &feed.project_id {
                 if !project_ids.contains(project_id.as_str()) {
@@ -429,7 +437,7 @@ pub fn validate_ai_config(config: &AiConfig) -> Result<()> {
     }
     validate_http_url("ai.api_url", &config.api_url)?;
     validate_non_empty("ai.api_key_env", &config.api_key_env)?;
-    validate_non_empty("ai.model", &config.model)?;
+    validate_non_empty("ai.model_env", &config.model_env)?;
     validate_non_empty("ai.cache_dir", &config.cache_dir)?;
     if config.request_timeout_seconds == 0 {
         bail!("ai.request_timeout_seconds must be greater than zero");
@@ -446,7 +454,7 @@ pub fn validate_ai_config(config: &AiConfig) -> Result<()> {
 fn default_ai_provider() -> String { "openai".to_owned() }
 fn default_ai_api_url() -> String { "https://api.openai.com/v1/responses".to_owned() }
 fn default_ai_api_key_env() -> String { "OPENAI_API_KEY".to_owned() }
-fn default_ai_model() -> String { "gpt-5.6".to_owned() }
+fn default_ai_model_env() -> String { "OPENAI_MODEL".to_owned() }
 fn default_ai_cache_dir() -> String { "data/ai-drafts".to_owned() }
 fn default_ai_request_timeout_seconds() -> u64 { 120 }
 fn default_ai_max_retries() -> u32 { 5 }
@@ -616,6 +624,7 @@ mod tests {
             category: "articles".to_owned(),
             project_id: Some("missing".to_owned()),
             required_any: vec![],
+            excluded_any: vec![],
         });
 
         let error = config.validate().unwrap_err().to_string();

@@ -18,6 +18,11 @@ fn starter_source_registry_is_valid_and_curated() {
     assert!(config.projects.iter().any(|project| project.id == "axum"));
     assert!(config.projects.iter().any(|project| project.id == "sqlx"));
     assert!(config.projects.iter().any(|project| project.id == "leptos"));
+    assert_eq!(config.feeds.len(), 4);
+    assert!(config.feeds.iter().any(|feed| feed.id == "rust-main-blog"));
+    assert!(config.feeds.iter().any(|feed| feed.id == "inside-rust"));
+    assert!(config.feeds.iter().any(|feed| feed.id == "without-boats"));
+    assert!(config.feeds.iter().any(|feed| feed.id == "niko-babysteps"));
 }
 
 #[test]
@@ -31,6 +36,7 @@ fn rss_fixture_is_parsed_and_keyword_filtered() {
         category: "articles".to_owned(),
         project_id: None,
         required_any: vec!["axum".to_owned(), "tokio".to_owned()],
+        excluded_any: vec![],
     };
     let window = CollectionWindow {
         since: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
@@ -46,6 +52,35 @@ fn rss_fixture_is_parsed_and_keyword_filtered() {
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].title, "Building services with Axum");
+}
+
+
+#[test]
+fn rss_excluded_keyword_wins_over_required_keyword() {
+    let bytes = fs::read("tests/fixtures/rss.xml").unwrap();
+    let parsed = parser::parse(bytes.as_slice()).unwrap();
+    let config = FeedConfig {
+        id: "example".to_owned(),
+        name: "Example".to_owned(),
+        url: "https://example.com/feed.xml".to_owned(),
+        category: "articles".to_owned(),
+        project_id: None,
+        required_any: vec!["axum".to_owned()],
+        excluded_any: vec!["services".to_owned()],
+    };
+    let window = CollectionWindow {
+        since: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
+        until: Utc.with_ymd_and_hms(2026, 7, 31, 23, 59, 59).unwrap(),
+    };
+    let now = Utc.with_ymd_and_hms(2026, 7, 10, 12, 0, 0).unwrap();
+
+    let candidates = parsed
+        .entries
+        .iter()
+        .filter_map(|entry| entry_to_candidate(&config, entry, &window, &now))
+        .collect::<Vec<_>>();
+
+    assert!(candidates.is_empty());
 }
 
 #[test]

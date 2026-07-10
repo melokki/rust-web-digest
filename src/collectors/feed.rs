@@ -122,10 +122,6 @@ fn matches_keywords(
     summary: Option<&str>,
     content: Option<&str>,
 ) -> bool {
-    if config.required_any.is_empty() {
-        return true;
-    }
-
     let haystack = format!(
         "{} {} {}",
         title,
@@ -134,8 +130,17 @@ fn matches_keywords(
     )
     .to_lowercase();
 
-    config
-        .required_any
+    if config
+        .excluded_any
         .iter()
         .any(|keyword| haystack.contains(&keyword.to_lowercase()))
+    {
+        return false;
+    }
+
+    config.required_any.is_empty()
+        || config
+            .required_any
+            .iter()
+            .any(|keyword| haystack.contains(&keyword.to_lowercase()))
 }

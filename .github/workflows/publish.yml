@@ -141,6 +141,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           NEWSLETTER_MONTH: ${{ steps.params.outputs.month }}
           COMPOSE_MODE: ${{ steps.params.outputs.mode }}
           AI_DRAFTING: ${{ steps.params.outputs.ai_drafting }}

@@ -45,7 +45,7 @@ category_order = [
 provider = "openai"
 api_url = "https://api.openai.com/v1/responses"
 api_key_env = "OPENAI_API_KEY"
-model = "gpt-5.6"
+model_env = "OPENAI_MODEL"
 cache_dir = "data/ai-drafts"
 request_timeout_seconds = 120
 max_retries = 5
@@ -296,12 +296,117 @@ releases = true
 security = true
 crate_releases = true
 
-# RSS/Atom feeds are intentionally explicit. Add project-maintained or trusted
-# engineering feeds as the editorial scope becomes clearer.
+# Curated article feeds
 #
-# [[feeds]]
-# id = "rust-blog"
-# name = "Rust Blog"
-# url = "https://blog.rust-lang.org/feed.xml"
-# category = "articles"
-# required_any = ["web", "http", "async", "network", "tls"]
+# Policy:
+# - Prefer publisher-provided RSS/Atom endpoints.
+# - Broad Rust feeds use conservative Rust-web relevance terms.
+# - Avoid generic keywords such as "rust" that would accept every post.
+# - excluded_any is applied before required_any.
+
+[[feeds]]
+id = "rust-main-blog"
+name = "Rust Blog"
+url = "https://blog.rust-lang.org/feed.xml"
+category = "articles"
+required_any = [
+  "async",
+  "await",
+  "tokio",
+  "axum",
+  "tower",
+  "hyper",
+  "reqwest",
+  "tonic",
+  "grpc",
+  "http",
+  "websocket",
+  "webassembly",
+  "wasm",
+  "network",
+  "server",
+  "tls",
+  "rustls",
+  "runtime",
+  "database",
+]
+excluded_any = [
+  "survey",
+  "governance",
+  "foundation",
+  "outreachy",
+  "summer of code",
+  "trademark",
+  "leadership council",
+]
+
+[[feeds]]
+id = "inside-rust"
+name = "Inside Rust"
+url = "https://blog.rust-lang.org/inside-rust/feed.xml"
+category = "articles"
+required_any = [
+  "async",
+  "await",
+  "tokio",
+  "axum",
+  "tower",
+  "hyper",
+  "http",
+  "webassembly",
+  "wasm",
+  "network",
+  "server",
+  "tls",
+  "runtime",
+  "executor",
+  "future",
+  "stream",
+]
+excluded_any = [
+  "survey",
+  "governance",
+  "meeting agenda",
+  "triage meeting",
+]
+
+[[feeds]]
+id = "without-boats"
+name = "without.boats"
+url = "https://without.boats/index.xml"
+category = "articles"
+required_any = [
+  "async",
+  "await",
+  "future",
+  "stream",
+  "executor",
+  "task",
+  "concurrency",
+  "tokio",
+  "network",
+  "server",
+  "http",
+  "pin",
+]
+excluded_any = []
+
+[[feeds]]
+id = "niko-babysteps"
+name = "baby steps"
+url = "https://smallcultfollowing.com/babysteps//index.xml"
+category = "articles"
+required_any = [
+  "async",
+  "await",
+  "future",
+  "stream",
+  "executor",
+  "tokio",
+  "network",
+  "server",
+  "http",
+  "web",
+  "service",
+]
+excluded_any = []

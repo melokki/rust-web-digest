@@ -114,21 +114,28 @@ pub struct OpenAiDraftGenerator<'a> {
     client: &'a Client,
     config: &'a AiConfig,
     api_key: &'a str,
+    model: Option<String>,
 }
 
 impl<'a> OpenAiDraftGenerator<'a> {
-    pub fn new(client: &'a Client, config: &'a AiConfig, api_key: &'a str) -> Self {
+    pub fn new(
+        client: &'a Client,
+        config: &'a AiConfig,
+        api_key: &'a str,
+        model: Option<String>,
+    ) -> Self {
         Self {
             client,
             config,
             api_key,
+            model,
         }
     }
 
     async fn request(&self, story: &NewsletterStory) -> Result<EditorialDraft> {
         let payload = build_openai_request(
             story,
-            &self.config.model,
+            self.model.as_deref(),
             self.config.max_source_chars,
         )?;
 
@@ -190,7 +197,7 @@ impl DraftGenerator for OpenAiDraftGenerator<'_> {
     }
 
     fn model(&self) -> &str {
-        &self.config.model
+        self.model.as_deref().unwrap_or("api-default")
     }
 
     fn generate<'a>(
@@ -333,12 +340,11 @@ pub fn story_fingerprint(story: &NewsletterStory) -> Result<String> {
 
 fn build_openai_request(
     story: &NewsletterStory,
-    model: &str,
+    model: Option<&str>,
     max_source_chars: usize,
 ) -> Result<Value> {
     let packet = story_packet(story, max_source_chars)?;
-    Ok(json!({
-        "model": model,
+    let mut payload = json!({
         "store": false,
         "input": [
             {
@@ -353,7 +359,16 @@ fn build_openai_request(
         "text": {
             "format": editorial_draft_schema()
         }
-    }))
+    });
+
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        payload
+            .as_object_mut()
+            .expect("OpenAI request payload is always an object")
+            .insert("model".to_owned(), Value::String(model.to_owned()));
+    }
+
+    Ok(payload)
 }
 
 fn story_packet(story: &NewsletterStory, max_source_chars: usize) -> Result<String> {
@@ -709,7 +724,7 @@ mod tests {
             draft: None,
         };
 
-        let request = build_openai_request(&story, "test-model", 1000).unwrap();
+        let request = build_openai_request(&story, Some("test-model"), 1000).unwrap();
         assert_eq!(request["model"], "test-model");
         assert_eq!(request["store"], false);
         assert_eq!(request["text"]["format"]["type"], "json_schema");
@@ -721,6 +736,31 @@ mod tests {
         assert!(system_prompt.contains("untrusted data"));
         assert!(system_prompt.contains("Never invent, assume, extrapolate, or embellish"));
         assert!(system_prompt.contains("do not establish"));
+    }
+
+    #[test]
+    fn responses_request_omits_model_when_no_override_is_configured() {
+        let story = NewsletterStory {
+            title: "Axum release".to_owned(),
+            category: "frameworks".to_owned(),
+            project: Some("Axum".to_owned()),
+            version: Some("1.2.3".to_owned()),
+            published_on: "July 10, 2026".to_owned(),
+            summary: None,
+            sources: vec![NewsletterSource {
+                kind: "release".to_owned(),
+                title: "Axum 1.2.3".to_owned(),
+                url: "https://example.com/release".to_owned(),
+                published_on: "2026-07-10".to_owned(),
+                summary: Some("Release summary".to_owned()),
+                content: Some("Longer release content".to_owned()),
+            }],
+            issue_url: None,
+            draft: None,
+        };
+
+        let request = build_openai_request(&story, None, 1000).unwrap();
+        assert!(request.get("model").is_none());
     }
 
 }
