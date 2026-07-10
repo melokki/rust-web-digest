@@ -24,6 +24,8 @@ pub enum EditorialStatus {
     Watch,
     Selected,
     Rejected,
+    Published,
+    Skipped,
 }
 
 impl EditorialStatus {
@@ -33,6 +35,8 @@ impl EditorialStatus {
             Self::Watch => &publishing.watch_status_label,
             Self::Selected => &publishing.selected_status_label,
             Self::Rejected => &publishing.rejected_status_label,
+            Self::Published => &publishing.published_status_label,
+            Self::Skipped => &publishing.skipped_status_label,
         }
     }
 }
@@ -67,6 +71,17 @@ impl EditorialMonth {
             key: format!("{:04}-{:02}", date.year(), date.month()),
             title: date.format("%B %Y").to_string(),
         }
+    }
+
+    pub fn next_month(&self) -> Self {
+        let date = NaiveDate::parse_from_str(&format!("{}-01", self.key), "%Y-%m-%d")
+            .expect("EditorialMonth keys are always valid YYYY-MM values");
+        let next = if date.month() == 12 {
+            NaiveDate::from_ymd_opt(date.year() + 1, 1, 1).unwrap()
+        } else {
+            NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1).unwrap()
+        };
+        Self::from_date(next)
     }
 }
 
@@ -103,6 +118,18 @@ pub struct StatusChange {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ArchiveMonthReport {
+    pub considered: usize,
+    pub published_closed: usize,
+    pub rejected_closed: usize,
+    pub skipped_closed: usize,
+    pub watch_moved: usize,
+    pub parent_closed: bool,
+    pub milestone_closed: bool,
+    pub unchanged: usize,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct GitHubIssue {
     id: u64,
@@ -113,6 +140,7 @@ struct GitHubIssue {
     #[serde(default)]
     labels: Vec<GitHubLabel>,
     milestone: Option<GitHubMilestoneRef>,
+    state: Option<String>,
     pull_request: Option<serde_json::Value>,
 }
 
@@ -131,6 +159,7 @@ struct GitHubMilestoneRef {
 struct GitHubMilestone {
     number: u64,
     title: String,
+    state: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +171,22 @@ struct CreatedIssue {
 #[derive(Debug, Serialize)]
 struct IssueLabelsRequest<'a> {
     labels: &'a [String],
+}
+
+#[derive(Debug, Serialize)]
+struct ArchiveIssueRequest<'a> {
+    labels: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    milestone: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_reason: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+struct CloseMilestoneRequest<'a> {
+    state: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -383,6 +428,7 @@ impl<'a> EditorialClient<'a> {
                         number: milestone.number,
                         title: milestone.title.clone(),
                     }),
+                    state: Some("open".to_owned()),
                     pull_request: None,
                 }
             }
@@ -404,6 +450,7 @@ impl<'a> EditorialClient<'a> {
                         number: milestone.number,
                         title: milestone.title.clone(),
                     }),
+                    state: Some("open".to_owned()),
                     pull_request: None,
                 }
             }
@@ -468,6 +515,197 @@ impl<'a> EditorialClient<'a> {
         fs::write(output, format!("{payload}\n"))
             .with_context(|| format!("failed to write {}", output.display()))?;
         Ok(records)
+    }
+
+
+    pub async fn archive_month(
+        &self,
+        month: &EditorialMonth,
+        dry_run: bool,
+    ) -> Result<ArchiveMonthReport> {
+        let mut report = ArchiveMonthReport::default();
+        if !dry_run {
+            self.require_token()?;
+        }
+
+        let Some(milestone) = self.find_milestone(&month.title).await? else {
+            return Ok(report);
+        };
+
+        if !dry_run {
+            self.ensure_label(
+                &self.publishing.published_status_label,
+                "0E8A16",
+                "Published in a Rust Web Digest issue",
+            )
+            .await?;
+            self.ensure_label(
+                &self.publishing.skipped_status_label,
+                "BFD4F2",
+                "Skipped when the month was archived",
+            )
+            .await?;
+        }
+
+        let next_month = month.next_month();
+        let next_milestone = if self.publishing.ensure_milestones {
+            match self.find_milestone(&next_month.title).await? {
+                Some(item) => Some(item.number),
+                None if dry_run => Some(0),
+                None => Some(self.create_milestone(&next_month.title).await?),
+            }
+        } else {
+            None
+        };
+
+        let issues = self.list_candidate_issues(milestone.number).await?;
+        report.considered = issues.len();
+
+        for issue in issues {
+            let status = issue_status(&issue, self.publishing)?;
+            let state = issue.state.as_deref().unwrap_or("open");
+
+            match status {
+                Some(EditorialStatus::Watch) => {
+                    let desired_milestone = next_milestone.or_else(|| issue.milestone.as_ref().map(|item| item.number));
+                    let unchanged = state == "open"
+                        && issue.milestone.as_ref().map(|item| item.number) == desired_milestone;
+                    if unchanged {
+                        report.unchanged += 1;
+                    } else {
+                        report.watch_moved += 1;
+                        if !dry_run {
+                            let labels = issue_label_names(&issue);
+                            self.archive_issue(
+                                issue.number,
+                                &labels,
+                                desired_milestone,
+                                Some("open"),
+                                None,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                Some(EditorialStatus::Published) => {
+                    if state == "closed" {
+                        report.unchanged += 1;
+                    } else {
+                        report.published_closed += 1;
+                        if !dry_run {
+                            let labels = issue_label_names(&issue);
+                            self.archive_issue(
+                                issue.number,
+                                &labels,
+                                issue.milestone.as_ref().map(|item| item.number),
+                                Some("closed"),
+                                Some("completed"),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                Some(EditorialStatus::Selected) => {
+                    report.published_closed += 1;
+                    if !dry_run {
+                        let labels = transition_labels(
+                            &issue_label_names(&issue),
+                            EditorialStatus::Published,
+                            self.publishing,
+                        );
+                        self.archive_issue(
+                            issue.number,
+                            &labels,
+                            issue.milestone.as_ref().map(|item| item.number),
+                            Some("closed"),
+                            Some("completed"),
+                        )
+                        .await?;
+                    }
+                }
+                Some(EditorialStatus::Rejected) => {
+                    if state == "closed" {
+                        report.unchanged += 1;
+                    } else {
+                        report.rejected_closed += 1;
+                        if !dry_run {
+                            let labels = issue_label_names(&issue);
+                            self.archive_issue(
+                                issue.number,
+                                &labels,
+                                issue.milestone.as_ref().map(|item| item.number),
+                                Some("closed"),
+                                Some("not_planned"),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                Some(EditorialStatus::Skipped) => {
+                    if state == "closed" {
+                        report.unchanged += 1;
+                    } else {
+                        report.skipped_closed += 1;
+                        if !dry_run {
+                            let labels = issue_label_names(&issue);
+                            self.archive_issue(
+                                issue.number,
+                                &labels,
+                                issue.milestone.as_ref().map(|item| item.number),
+                                Some("closed"),
+                                Some("not_planned"),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                Some(EditorialStatus::New) | None => {
+                    report.skipped_closed += 1;
+                    if !dry_run {
+                        let labels = transition_labels(
+                            &issue_label_names(&issue),
+                            EditorialStatus::Skipped,
+                            self.publishing,
+                        );
+                        self.archive_issue(
+                            issue.number,
+                            &labels,
+                            issue.milestone.as_ref().map(|item| item.number),
+                            Some("closed"),
+                            Some("not_planned"),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+
+        for parent in self.list_month_parent_issues(month).await? {
+            if parent.state.as_deref() == Some("closed") {
+                continue;
+            }
+            report.parent_closed = true;
+            if !dry_run {
+                let labels = issue_label_names(&parent);
+                self.archive_issue(
+                    parent.number,
+                    &labels,
+                    parent.milestone.as_ref().map(|item| item.number),
+                    Some("closed"),
+                    Some("completed"),
+                )
+                .await?;
+            }
+        }
+
+        if milestone.state.as_deref() != Some("closed") {
+            report.milestone_closed = true;
+            if !dry_run {
+                self.close_milestone(milestone.number).await?;
+            }
+        }
+
+        Ok(report)
     }
 
     async fn get_issue(&self, number: u64) -> Result<GitHubIssue> {
@@ -725,6 +963,65 @@ impl<'a> EditorialClient<'a> {
         Ok(())
     }
 
+
+    async fn create_milestone(&self, title: &str) -> Result<u64> {
+        let url = self.repo_url("milestones");
+        let response = self
+            .request(self.client.post(url))
+            .json(&serde_json::json!({
+                "title": title,
+                "description": "Editorial inbox for Rust Web Digest stories published in this month."
+            }))
+            .send()
+            .await
+            .with_context(|| format!("failed to create milestone '{title}'"))?
+            .error_for_status()
+            .with_context(|| format!("GitHub returned an error creating milestone '{title}'"))?
+            .json::<GitHubMilestone>()
+            .await
+            .with_context(|| format!("invalid GitHub milestone response for '{title}'"))?;
+        pause_after_mutation().await;
+        Ok(response.number)
+    }
+
+    async fn archive_issue(
+        &self,
+        number: u64,
+        labels: &[String],
+        milestone: Option<u64>,
+        state: Option<&str>,
+        state_reason: Option<&str>,
+    ) -> Result<()> {
+        let url = self.repo_url(&format!("issues/{number}"));
+        self.request(self.client.patch(url))
+            .json(&ArchiveIssueRequest {
+                labels,
+                milestone,
+                state,
+                state_reason,
+            })
+            .send()
+            .await
+            .with_context(|| format!("failed to archive issue #{number}"))?
+            .error_for_status()
+            .with_context(|| format!("GitHub returned an error archiving issue #{number}"))?;
+        pause_after_mutation().await;
+        Ok(())
+    }
+
+    async fn close_milestone(&self, number: u64) -> Result<()> {
+        let url = self.repo_url(&format!("milestones/{number}"));
+        self.request(self.client.patch(url))
+            .json(&CloseMilestoneRequest { state: "closed" })
+            .send()
+            .await
+            .with_context(|| format!("failed to close milestone #{number}"))?
+            .error_for_status()
+            .with_context(|| format!("GitHub returned an error closing milestone #{number}"))?;
+        pause_after_mutation().await;
+        Ok(())
+    }
+
     fn require_token(&self) -> Result<()> {
         if self.token.is_none() {
             bail!("GITHUB_TOKEN is required for editorial mutations");
@@ -799,6 +1096,8 @@ fn issue_status(
         EditorialStatus::Watch,
         EditorialStatus::Selected,
         EditorialStatus::Rejected,
+        EditorialStatus::Published,
+        EditorialStatus::Skipped,
     ]
     .into_iter()
     .filter(|status| issue_has_label(issue, status.label(publishing)))
@@ -837,6 +1136,8 @@ fn render_month_parent_body(
     let mut watch = 0usize;
     let mut selected = 0usize;
     let mut rejected = 0usize;
+    let mut published = 0usize;
+    let mut skipped = 0usize;
     let mut unset = 0usize;
 
     for issue in issues {
@@ -845,6 +1146,8 @@ fn render_month_parent_body(
             Some(EditorialStatus::Watch) => watch += 1,
             Some(EditorialStatus::Selected) => selected += 1,
             Some(EditorialStatus::Rejected) => rejected += 1,
+            Some(EditorialStatus::Published) => published += 1,
+            Some(EditorialStatus::Skipped) => skipped += 1,
             None => unset += 1,
         }
     }
@@ -859,6 +1162,8 @@ fn render_month_parent_body(
          | Watch | {watch} |\n\
          | Selected | {selected} |\n\
          | Rejected | {rejected} |\n\
+         | Published | {published} |\n\
+         | Skipped | {skipped} |\n\
          | Unset | {unset} |\n\
          | **Total** | **{}** |\n{}\n\n\
          ## Editorial notes\n\n\
@@ -979,6 +1284,7 @@ mod tests {
                 number: 7,
                 title: "July 2026".to_owned(),
             }),
+            state: Some("open".to_owned()),
             pull_request: None,
         }
     }

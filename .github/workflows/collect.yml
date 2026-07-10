@@ -27,6 +27,15 @@ jobs:
       - name: Build collector
         run: cargo build --release
 
+
+      - name: Restore AI issue-summary cache
+        uses: actions/cache@v4
+        with:
+          path: data/ai-drafts/issues
+          key: rust-web-issue-ai-drafts-${{ github.run_id }}
+          restore-keys: |
+            rust-web-issue-ai-drafts-
+
       - name: Collect candidates
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -36,14 +45,17 @@ jobs:
             --since-hours 360 \
             --output data/candidates.jsonl
 
-      - name: Publish candidate issues
+      - name: Publish candidate issues with source-grounded AI summaries
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           ./target/release/rust-web-digest publish-issues \
             --since-hours 96 \
-            --input data/candidates.jsonl
+            --input data/candidates.jsonl \
+            --ai \
+            --ai-failure-policy fallback
 
       - name: Sync monthly editorial workspaces
         env:

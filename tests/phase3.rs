@@ -2,9 +2,13 @@ use std::collections::BTreeMap;
 
 use chrono::{TimeZone, Utc};
 use rust_web_digest::{
+    ai::{ActionRequired, DraftConfidence, EditorialDraft},
     config::{PublishingConfig, ReconciliationConfig},
     domain::{Candidate, CandidateKind},
-    github_issues::{build_story_issue_draft, extract_candidate_ids, extract_story_ids, merge_managed_body},
+    github_issues::{
+        build_story_issue_draft, build_story_issue_draft_with_ai, extract_candidate_ids,
+        extract_story_ids, merge_managed_body,
+    },
     reconcile::reconcile_candidates,
 };
 
@@ -141,6 +145,41 @@ fn story_issue_contains_story_and_all_source_markers() {
     assert_eq!(extract_candidate_ids(&draft.body).len(), 2);
     assert!(draft.labels.contains(&"type:release".to_owned()));
     assert!(draft.labels.contains(&"type:crate".to_owned()));
+}
+
+#[test]
+fn ai_summary_is_rendered_inside_managed_issue_content() {
+    let release = candidate(
+        "release",
+        CandidateKind::GitHubRelease,
+        "Axum 1.2.3 released",
+        10,
+        BTreeMap::from([("tag_name".to_owned(), "v1.2.3".to_owned())]),
+    );
+    let stories = reconcile_candidates(&[release], &ReconciliationConfig::default());
+    let ai = EditorialDraft {
+        headline: "Axum 1.2.3 released".to_owned(),
+        what_changed: "The release changes routing behavior documented in the supplied release notes.".to_owned(),
+        why_it_matters: "Applications using the affected routing behavior should review the release notes.".to_owned(),
+        who_is_affected: "Users of the affected routing behavior.".to_owned(),
+        action_required: ActionRequired::Investigate,
+        action: "Review the primary release notes before upgrading.".to_owned(),
+        confidence: DraftConfidence::Medium,
+        sourced_claims: Vec::new(),
+    };
+
+    let draft = build_story_issue_draft_with_ai(
+        &stories[0],
+        Some("Axum"),
+        &PublishingConfig::default(),
+        Some(&ai),
+    );
+
+    assert!(draft.body.contains("## Source-grounded summary"));
+    assert!(draft.body.contains("### What changed"));
+    assert!(draft.body.contains("### Why it matters"));
+    assert!(draft.body.contains("Review the primary release notes before upgrading."));
+    assert!(draft.body.contains("## Editorial notes"));
 }
 
 #[test]

@@ -1,13 +1,21 @@
-use std::{env, fs, path::PathBuf, time::Duration as StdDuration};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+    time::Duration as StdDuration,
+};
 
 use anyhow::{Context, Result, bail};
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::Client;
 use rust_web_digest::{
-    ai::{AiFailurePolicy, OpenAiDraftGenerator, enrich_document},
+    ai::{AiFailurePolicy, EditorialDraft, OpenAiDraftGenerator, enrich_document},
     collectors::{CollectionWindow, collect_all},
-    composer::{CompositionMode, compose_automatic, compose_editorial, render_markdown, write_newsletter},
+    composer::{
+        CompositionMode, NewsletterDocument, NewsletterSection, compose_automatic,
+        compose_editorial, newsletter_story_from_reconciled, render_markdown, write_newsletter,
+    },
     config::AppConfig,
     editorial::{
         EditorialClient, EditorialMonth, EditorialStatus, EditorialStatusFilter,
@@ -48,6 +56,12 @@ enum Command {
         repository: Option<String>,
         #[arg(long, default_value_t = 96)]
         since_hours: i64,
+        #[arg(long, default_value_t = false)]
+        ai: bool,
+        #[arg(long, default_value_t = false)]
+        refresh_ai: bool,
+        #[arg(long, value_enum, default_value = "fallback")]
+        ai_failure_policy: AiFailurePolicyArg,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
     },
@@ -141,6 +155,16 @@ enum EditorialCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    ArchiveMonth {
+        #[arg(long, default_value = "config/sources.toml")]
+        config: PathBuf,
+        #[arg(long)]
+        repository: Option<String>,
+        #[arg(long)]
+        month: String,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -194,6 +218,8 @@ enum EditorialStatusArg {
     Watch,
     Selected,
     Rejected,
+    Published,
+    Skipped,
 }
 
 impl From<EditorialStatusArg> for EditorialStatus {
@@ -203,6 +229,8 @@ impl From<EditorialStatusArg> for EditorialStatus {
             EditorialStatusArg::Watch => Self::Watch,
             EditorialStatusArg::Selected => Self::Selected,
             EditorialStatusArg::Rejected => Self::Rejected,
+            EditorialStatusArg::Published => Self::Published,
+            EditorialStatusArg::Skipped => Self::Skipped,
         }
     }
 }
@@ -214,6 +242,8 @@ enum EditorialFilterArg {
     Watch,
     Selected,
     Rejected,
+    Published,
+    Skipped,
 }
 
 impl From<EditorialFilterArg> for EditorialStatusFilter {
@@ -224,6 +254,8 @@ impl From<EditorialFilterArg> for EditorialStatusFilter {
             EditorialFilterArg::Watch => Self::Status(EditorialStatus::Watch),
             EditorialFilterArg::Selected => Self::Status(EditorialStatus::Selected),
             EditorialFilterArg::Rejected => Self::Status(EditorialStatus::Rejected),
+            EditorialFilterArg::Published => Self::Status(EditorialStatus::Published),
+            EditorialFilterArg::Skipped => Self::Status(EditorialStatus::Skipped),
         }
     }
 }
@@ -243,8 +275,23 @@ async fn main() -> Result<()> {
             input,
             repository,
             since_hours,
+            ai,
+            refresh_ai,
+            ai_failure_policy,
             dry_run,
-        } => publish_issues(config, input, repository, since_hours, dry_run).await,
+        } => {
+            publish_issues(
+                config,
+                input,
+                repository,
+                since_hours,
+                ai,
+                refresh_ai,
+                ai_failure_policy.into(),
+                dry_run,
+            )
+            .await
+        }
         Command::Editorial { command } => run_editorial(command).await,
         Command::Compose {
             config,
@@ -329,6 +376,9 @@ async fn publish_issues(
     input: PathBuf,
     repository: Option<String>,
     since_hours: i64,
+    ai_enabled: bool,
+    refresh_ai: bool,
+    ai_failure_policy: AiFailurePolicy,
     dry_run: bool,
 ) -> Result<()> {
     validate_positive_hours(since_hours)?;
@@ -340,6 +390,24 @@ async fn publish_issues(
 
     let candidates = JsonlStore::new(input).load()?;
     let since = Utc::now() - Duration::hours(since_hours);
+    let ai_drafts = if ai_enabled && !dry_run {
+        Some(
+            build_issue_ai_drafts(
+                &config,
+                &client,
+                &candidates,
+                &since,
+                refresh_ai,
+                ai_failure_policy,
+            )
+            .await?,
+        )
+    } else {
+        if ai_enabled && dry_run {
+            println!("AI enrichment skipped during --dry-run to avoid API usage.");
+        }
+        None
+    };
     let publisher = GitHubIssuePublisher::new(
         &client,
         &config.collection.github_api_url,
@@ -353,7 +421,7 @@ async fn publish_issues(
         since.to_rfc3339()
     );
     let report = publisher
-        .publish(&config, &candidates, since, dry_run)
+        .publish(&config, &candidates, since, ai_drafts.as_ref(), dry_run)
         .await?;
 
     println!("Stories considered: {}", report.considered);
@@ -367,6 +435,96 @@ async fn publish_issues(
     }
 
     Ok(())
+}
+
+async fn build_issue_ai_drafts(
+    config: &AppConfig,
+    client: &Client,
+    candidates: &[rust_web_digest::domain::Candidate],
+    since: &chrono::DateTime<Utc>,
+    refresh_ai: bool,
+    failure_policy: AiFailurePolicy,
+) -> Result<HashMap<String, EditorialDraft>> {
+    let stories = reconcile_candidates(candidates, &config.reconciliation)
+        .into_iter()
+        .filter(|story| story.has_candidate_discovered_since(since))
+        .collect::<Vec<_>>();
+
+    if stories.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let api_key = match env::var(&config.ai.api_key_env) {
+        Ok(value) => value,
+        Err(error) if failure_policy == AiFailurePolicy::Fallback => {
+            eprintln!(
+                "AI issue summaries disabled for this run: {} is unavailable ({error}). Deterministic source excerpts will be used.",
+                config.ai.api_key_env
+            );
+            return Ok(HashMap::new());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "AI issue summaries require environment variable {}",
+                    config.ai.api_key_env
+                )
+            });
+        }
+    };
+
+    let story_ids = stories
+        .iter()
+        .map(|story| story.id.clone())
+        .collect::<Vec<_>>();
+    let newsletter_stories = stories
+        .iter()
+        .map(|story| newsletter_story_from_reconciled(story, config))
+        .collect::<Vec<_>>();
+
+    let mut document = NewsletterDocument {
+        month: "issue-summaries".to_owned(),
+        title: "Rust Web Digest issue summaries".to_owned(),
+        mode: CompositionMode::Automatic,
+        story_count: newsletter_stories.len(),
+        sections: vec![NewsletterSection {
+            category: "issue-summaries".to_owned(),
+            title: "Issue summaries".to_owned(),
+            stories: newsletter_stories,
+        }],
+    };
+
+    let generator = OpenAiDraftGenerator::new(client, &config.ai, &api_key);
+    let cache_root = Path::new(&config.ai.cache_dir).join("issues");
+    let report = enrich_document(
+        &mut document,
+        &generator,
+        &cache_root,
+        refresh_ai,
+        failure_policy,
+    )
+    .await?;
+
+    println!(
+        "AI issue summaries: {} generated, {} cached, {} failed",
+        report.generated, report.cached, report.failed
+    );
+    for failure in report.failures {
+        eprintln!("  AI fallback: {failure}");
+    }
+
+    let enriched_stories = document
+        .sections
+        .into_iter()
+        .next()
+        .map(|section| section.stories)
+        .unwrap_or_default();
+
+    Ok(story_ids
+        .into_iter()
+        .zip(enriched_stories)
+        .filter_map(|(story_id, story)| story.draft.map(|draft| (story_id, draft)))
+        .collect())
 }
 
 async fn run_editorial(command: EditorialCommand) -> Result<()> {
@@ -482,6 +640,38 @@ async fn run_editorial(command: EditorialCommand) -> Result<()> {
             )?;
             let records = editorial.export_selected(&month, &output).await?;
             println!("Exported {} selected stories to {}", records.len(), output.display());
+            Ok(())
+        }
+        EditorialCommand::ArchiveMonth {
+            config,
+            repository,
+            month,
+            dry_run,
+        } => {
+            let config = AppConfig::load(config)?;
+            let repository = resolve_repository(repository)?;
+            let token = env::var("GITHUB_TOKEN").ok();
+            let client = build_http_client(&config)?;
+            let month = EditorialMonth::parse(&month)?;
+            let editorial = EditorialClient::new(
+                &client,
+                &config.collection.github_api_url,
+                token.as_deref(),
+                &repository,
+                &config.publishing,
+            )?;
+            let report = editorial.archive_month(&month, dry_run).await?;
+            println!("Candidate issues considered: {}", report.considered);
+            println!("Published issues closed: {}", report.published_closed);
+            println!("Rejected issues closed: {}", report.rejected_closed);
+            println!("Skipped issues closed: {}", report.skipped_closed);
+            println!("Watch issues moved: {}", report.watch_moved);
+            println!("Parent issue closed: {}", report.parent_closed);
+            println!("Milestone closed: {}", report.milestone_closed);
+            println!("Unchanged: {}", report.unchanged);
+            if dry_run {
+                println!("Dry run complete; no GitHub Issues or milestones were changed.");
+            }
             Ok(())
         }
     }

@@ -163,6 +163,12 @@ pub struct PublishingConfig {
     pub selected_status_label: String,
     #[serde(default = "default_rejected_status_label")]
     pub rejected_status_label: String,
+    #[serde(default = "default_published_status_label")]
+    pub published_status_label: String,
+    #[serde(default = "default_skipped_status_label")]
+    pub skipped_status_label: String,
+    #[serde(default = "default_late_discovery_label")]
+    pub late_discovery_label: String,
     #[serde(default = "default_monthly_parent_label")]
     pub monthly_parent_label: String,
     #[serde(default = "default_monthly_parent_title_prefix")]
@@ -184,6 +190,9 @@ impl Default for PublishingConfig {
             watch_status_label: default_watch_status_label(),
             selected_status_label: default_selected_status_label(),
             rejected_status_label: default_rejected_status_label(),
+            published_status_label: default_published_status_label(),
+            skipped_status_label: default_skipped_status_label(),
+            late_discovery_label: default_late_discovery_label(),
             monthly_parent_label: default_monthly_parent_label(),
             monthly_parent_title_prefix: default_monthly_parent_title_prefix(),
             ensure_labels: default_ensure_labels(),
@@ -282,6 +291,8 @@ impl PublishingConfig {
             self.watch_status_label.clone(),
             self.selected_status_label.clone(),
             self.rejected_status_label.clone(),
+            self.published_status_label.clone(),
+            self.skipped_status_label.clone(),
         ]
         .into_iter()
         .collect()
@@ -325,19 +336,28 @@ impl AppConfig {
         validate_non_empty("publishing.watch_status_label", &self.publishing.watch_status_label)?;
         validate_non_empty("publishing.selected_status_label", &self.publishing.selected_status_label)?;
         validate_non_empty("publishing.rejected_status_label", &self.publishing.rejected_status_label)?;
+        validate_non_empty("publishing.published_status_label", &self.publishing.published_status_label)?;
+        validate_non_empty("publishing.skipped_status_label", &self.publishing.skipped_status_label)?;
+        validate_non_empty("publishing.late_discovery_label", &self.publishing.late_discovery_label)?;
         validate_non_empty("publishing.monthly_parent_label", &self.publishing.monthly_parent_label)?;
         validate_non_empty(
             "publishing.monthly_parent_title_prefix",
             &self.publishing.monthly_parent_title_prefix,
         )?;
         let status_labels = self.publishing.status_labels();
-        if status_labels.len() != 4 {
+        if status_labels.len() != 6 {
             bail!("publishing status labels must be unique");
         }
         if self.publishing.monthly_parent_label == self.publishing.candidate_label
             || status_labels.contains(&self.publishing.monthly_parent_label)
         {
             bail!("publishing.monthly_parent_label must be distinct from candidate and status labels");
+        }
+        if self.publishing.late_discovery_label == self.publishing.candidate_label
+            || status_labels.contains(&self.publishing.late_discovery_label)
+            || self.publishing.late_discovery_label == self.publishing.monthly_parent_label
+        {
+            bail!("publishing.late_discovery_label must be distinct from candidate, parent, and status labels");
         }
         if self.publishing.github_max_pages == 0 {
             bail!("publishing.github_max_pages must be greater than zero");
@@ -521,6 +541,18 @@ fn default_selected_status_label() -> String {
 
 fn default_rejected_status_label() -> String {
     "status:rejected".to_owned()
+}
+
+fn default_published_status_label() -> String {
+    "status:published".to_owned()
+}
+
+fn default_skipped_status_label() -> String {
+    "status:skipped".to_owned()
+}
+
+fn default_late_discovery_label() -> String {
+    "late-discovery".to_owned()
 }
 
 fn default_monthly_parent_label() -> String {

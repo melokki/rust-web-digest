@@ -13,6 +13,7 @@ use crate::{
     config::{AppConfig, NewsletterConfig},
     domain::{Candidate, CandidateKind, Story},
     editorial::{EditorialMonth, EditorialStatus, EditorialStoryRecord},
+    github_issues::extract_source_excerpt,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +111,19 @@ pub fn compose_automatic(
         .collect::<Vec<_>>();
 
     build_document(month, CompositionMode::Automatic, items, &config.newsletter)
+}
+
+pub fn newsletter_story_from_reconciled(
+    story: &Story,
+    config: &AppConfig,
+) -> NewsletterStory {
+    let project_names = config
+        .projects
+        .iter()
+        .map(|project| (project.id.as_str(), project.name.as_str()))
+        .collect::<HashMap<_, _>>();
+
+    story_from_reconciled(story, &project_names)
 }
 
 pub fn compose_editorial(
@@ -319,7 +333,7 @@ fn story_from_reconciled(
     let summary = story
         .candidates
         .iter()
-        .find_map(|candidate| meaningful_summary(candidate.summary.as_deref()));
+        .find_map(candidate_summary);
     let project = story
         .project_id
         .as_deref()
@@ -395,10 +409,12 @@ pub fn extract_sources_from_issue_body(body: &str) -> Result<Vec<NewsletterSourc
     for block in source_section.split("\n### ").skip(1) {
         let mut lines = block.lines();
         let heading = lines.next().unwrap_or_default().trim();
-        let (kind, published_on) = heading
-            .split_once(" · ")
-            .map(|(kind, date)| (kind.trim().to_owned(), date.trim().to_owned()))
-            .unwrap_or_else(|| (heading.to_owned(), String::new()));
+        let parts = heading.split(" · ").map(str::trim).collect::<Vec<_>>();
+        let (kind, published_on) = match parts.as_slice() {
+            [kind, date] => ((*kind).to_owned(), (*date).to_owned()),
+            [kind, _role, date] => ((*kind).to_owned(), (*date).to_owned()),
+            _ => (heading.to_owned(), String::new()),
+        };
 
         let remaining = lines.collect::<Vec<_>>();
         let link_index = remaining
@@ -446,12 +462,33 @@ fn source_from_candidate(candidate: &Candidate) -> NewsletterSource {
         title: candidate.title.clone(),
         url: candidate.url.clone(),
         published_on: candidate.published_at.format("%Y-%m-%d").to_string(),
-        summary: meaningful_summary(candidate.summary.as_deref()),
+        summary: candidate_summary(candidate),
         content: candidate
             .raw_content
             .as_deref()
-            .and_then(|value| meaningful_summary(Some(value))),
+            .and_then(|value| extract_source_excerpt(value, 16_000)),
     }
+}
+
+fn candidate_summary(candidate: &Candidate) -> Option<String> {
+    if candidate.kind == CandidateKind::CrateRelease {
+        let version = candidate
+            .metadata
+            .get("version")
+            .or_else(|| candidate.metadata.get("num"))
+            .map(String::as_str)
+            .unwrap_or("the tracked version");
+        return Some(format!(
+            "Publication confirmation: `{}` was published to crates.io. Use the primary release notes or project article to understand what changed.",
+            version
+        ));
+    }
+
+    candidate
+        .raw_content
+        .as_deref()
+        .and_then(|value| extract_source_excerpt(value, 2_400))
+        .or_else(|| meaningful_summary(candidate.summary.as_deref()))
 }
 
 fn story_in_month(story: &Story, month: &EditorialMonth) -> bool {

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, sleep};
 
 use crate::{
+    ai::EditorialDraft,
     config::{AppConfig, PublishingConfig},
     domain::{Candidate, CandidateKind, Story},
     reconcile::reconcile_candidates,
@@ -69,6 +70,7 @@ struct GitHubLabel {
 struct GitHubMilestone {
     number: u64,
     title: String,
+    state: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +147,7 @@ impl<'a> GitHubIssuePublisher<'a> {
         config: &AppConfig,
         candidates: &[Candidate],
         since: DateTime<Utc>,
+        ai_drafts: Option<&HashMap<String, EditorialDraft>>,
         dry_run: bool,
     ) -> Result<PublishReport> {
         if !dry_run && self.token.is_none() {
@@ -168,7 +171,12 @@ impl<'a> GitHubIssuePublisher<'a> {
                     .project_id
                     .as_deref()
                     .and_then(|id| project_names.get(id).copied());
-                build_story_issue_draft(story, project_name, self.publishing)
+                build_story_issue_draft_with_ai(
+                    story,
+                    project_name,
+                    self.publishing,
+                    ai_drafts.and_then(|drafts| drafts.get(&story.id)),
+                )
             })
             .collect::<Vec<_>>();
 
@@ -240,14 +248,14 @@ impl<'a> GitHubIssuePublisher<'a> {
                 .collect::<HashSet<_>>();
             required_labels.extend(self.publishing.status_labels());
             required_labels.extend(self.publishing.additional_status_labels.iter().cloned());
+            required_labels.insert(self.publishing.late_discovery_label.clone());
 
             let mut required_labels = required_labels.into_iter().collect::<Vec<_>>();
             required_labels.sort();
             for label in required_labels {
                 if !existing_labels.contains(&label) {
                     let spec = label_spec(&label);
-                    self.create_label(&label, spec.color, spec.description)
-                        .await?;
+                    self.create_label(&label, spec.color, spec.description).await?;
                     existing_labels.insert(label);
                 }
             }
@@ -268,12 +276,24 @@ impl<'a> GitHubIssuePublisher<'a> {
                 continue;
             }
 
+            let mut effective_draft = draft.clone();
             let milestone = if self.publishing.ensure_milestones {
-                match milestones.get(&draft.milestone_title).copied() {
+                let target_title = match milestones.get(&effective_draft.milestone_title) {
+                    Some(existing) if existing.state.as_deref() == Some("closed") => {
+                        effective_draft.labels.push(self.publishing.late_discovery_label.clone());
+                        effective_draft.labels.sort();
+                        effective_draft.labels.dedup();
+                        story.discovered_at.format("%B %Y").to_string()
+                    }
+                    _ => effective_draft.milestone_title.clone(),
+                };
+
+                match milestones.get(&target_title).map(|item| item.number) {
                     Some(number) => Some(number),
                     None => {
-                        let number = self.create_milestone(&draft.milestone_title).await?;
-                        milestones.insert(draft.milestone_title.clone(), number);
+                        let created = self.create_milestone(&target_title).await?;
+                        let number = created.number;
+                        milestones.insert(target_title.clone(), created);
                         Some(number)
                     }
                 }
@@ -283,8 +303,8 @@ impl<'a> GitHubIssuePublisher<'a> {
 
             match matches.as_slice() {
                 [] => {
-                    let number = self.create_issue(draft, milestone).await?;
-                    issues.push(existing_issue_from_draft(number, draft, milestone));
+                    let number = self.create_issue(&effective_draft, milestone).await?;
+                    issues.push(existing_issue_from_draft(number, &effective_draft, milestone));
                     report.created += 1;
                 }
                 [index] => {
@@ -292,33 +312,32 @@ impl<'a> GitHubIssuePublisher<'a> {
                     let issue_number = issue.number;
                     let new_sources = new_source_candidates(story, issue);
                     let body =
-                        merge_managed_body(issue.body.as_deref().unwrap_or_default(), &draft.body);
-                    let labels = merge_labels(issue, &draft.labels, self.publishing);
+                        merge_managed_body(issue.body.as_deref().unwrap_or_default(), &effective_draft.body);
+                    let labels = merge_labels(issue, &effective_draft.labels, self.publishing);
                     let existing_milestone = issue.milestone.as_ref().map(|item| item.number);
-                    let milestone_changed =
-                        self.publishing.ensure_milestones && existing_milestone != milestone;
+                    let milestone_changed = self.publishing.ensure_milestones
+                        && existing_milestone != milestone;
                     let stored_milestone = if self.publishing.ensure_milestones {
                         milestone
                     } else {
                         existing_milestone
                     };
-                    let changed = issue.title != draft.title
+                    let changed = issue.title != effective_draft.title
                         || issue.body.as_deref().unwrap_or_default() != body
                         || issue_label_names(issue) != labels
                         || milestone_changed;
 
                     if changed {
-                        self.update_issue(issue_number, draft, &body, &labels, milestone)
+                        self.update_issue(issue_number, &effective_draft, &body, &labels, stored_milestone)
                             .await?;
-                        if config.reconciliation.comment_on_story_update && !new_sources.is_empty()
-                        {
+                        if config.reconciliation.comment_on_story_update && !new_sources.is_empty() {
                             let comment = render_source_update_comment(&new_sources);
                             self.create_comment(issue_number, &comment).await?;
                         }
 
                         issues[*index] = existing_issue_from_updated(
                             issue_number,
-                            draft,
+                            &effective_draft,
                             body,
                             labels,
                             stored_milestone,
@@ -396,7 +415,7 @@ impl<'a> GitHubIssuePublisher<'a> {
         Ok(labels)
     }
 
-    async fn list_milestones(&self) -> Result<HashMap<String, u64>> {
+    async fn list_milestones(&self) -> Result<HashMap<String, GitHubMilestone>> {
         let mut milestones = HashMap::new();
         for page in 1..=self.publishing.github_max_pages {
             let page_string = page.to_string();
@@ -421,7 +440,7 @@ impl<'a> GitHubIssuePublisher<'a> {
             milestones.extend(
                 response
                     .into_iter()
-                    .map(|milestone| (milestone.title, milestone.number)),
+                    .map(|milestone| (milestone.title.clone(), milestone)),
             );
             if page_len < 100 {
                 break;
@@ -447,7 +466,7 @@ impl<'a> GitHubIssuePublisher<'a> {
         Ok(())
     }
 
-    async fn create_milestone(&self, title: &str) -> Result<u64> {
+    async fn create_milestone(&self, title: &str) -> Result<GitHubMilestone> {
         let url = self.repo_url("milestones");
         let response = self
             .request(self.client.post(url))
@@ -464,7 +483,7 @@ impl<'a> GitHubIssuePublisher<'a> {
             .await
             .with_context(|| format!("invalid GitHub milestone response for '{title}'"))?;
         pause_after_mutation().await;
-        Ok(response.number)
+        Ok(response)
     }
 
     async fn create_issue(&self, draft: &IssueDraft, milestone: Option<u64>) -> Result<u64> {
@@ -579,6 +598,15 @@ pub fn build_story_issue_draft(
     project_name: Option<&str>,
     publishing: &PublishingConfig,
 ) -> IssueDraft {
+    build_story_issue_draft_with_ai(story, project_name, publishing, None)
+}
+
+pub fn build_story_issue_draft_with_ai(
+    story: &Story,
+    project_name: Option<&str>,
+    publishing: &PublishingConfig,
+    ai_draft: Option<&EditorialDraft>,
+) -> IssueDraft {
     let title = match project_name.or(story.project_id.as_deref()) {
         Some(project) => format!("[{project}] {}", story.title),
         None => story.title.clone(),
@@ -606,6 +634,9 @@ pub fn build_story_issue_draft(
         .as_deref()
         .map(|version| format!("- **Version:** {version}\n"))
         .unwrap_or_default();
+    let source_grounded_summary = ai_draft
+        .map(render_ai_issue_summary)
+        .unwrap_or_default();
     let sources = render_sources(&story.candidates);
     let markers = std::iter::once(story_marker(&story.id))
         .chain(story.candidate_ids().map(candidate_marker))
@@ -620,6 +651,7 @@ pub fn build_story_issue_draft(
          {version_line}\
          - **First published:** {}\n\
          - **Sources:** {}\n\n\
+         {source_grounded_summary}\
          ## Sources\n\n\
          {sources}\n\n\
          {markers}\n\
@@ -642,28 +674,148 @@ pub fn build_story_issue_draft(
     }
 }
 
+fn render_ai_issue_summary(draft: &EditorialDraft) -> String {
+    let mut output = String::new();
+    output.push_str("## Source-grounded summary\n\n");
+    output.push_str("_AI-assisted summary generated only from the source material listed below. Verify important claims against the primary sources before publication._\n\n");
+    output.push_str(&format!("### What changed\n\n{}\n\n", draft.what_changed.trim()));
+    output.push_str(&format!("### Why it matters\n\n{}\n\n", draft.why_it_matters.trim()));
+
+    if !draft.who_is_affected.trim().is_empty() {
+        output.push_str(&format!(
+            "### Who should care\n\n{}\n\n",
+            draft.who_is_affected.trim()
+        ));
+    }
+
+    output.push_str(&format!(
+        "### Suggested action\n\n**{}** — {}\n\n",
+        draft.action_required.label(),
+        draft.action.trim()
+    ));
+    output.push_str(&format!(
+        "_Summary confidence: {}_\n\n",
+        draft.confidence.label()
+    ));
+    output
+}
+
 fn render_sources(candidates: &[Candidate]) -> String {
-    candidates
-        .iter()
+    let mut ordered = candidates.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|candidate| source_priority(candidate.kind));
+
+    ordered
+        .into_iter()
         .map(|candidate| {
-            let summary = candidate
-                .summary
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or("No source summary was provided.");
+            let context = source_context(candidate);
             let metadata = render_metadata(&candidate.metadata);
+            let role = source_role(candidate.kind);
             format!(
-                "### {} · {}\n\n[{}]({})\n\n{}\n\n{}",
+                "### {} · {} · {}\n\n[{}]({})\n\n{}\n\n{}",
                 kind_slug(candidate.kind),
+                role,
                 candidate.published_at.format("%Y-%m-%d"),
                 candidate.title,
                 candidate.url,
-                summary,
+                context,
                 metadata,
             )
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn source_priority(kind: CandidateKind) -> u8 {
+    match kind {
+        CandidateKind::GitHubRelease => 0,
+        CandidateKind::SecurityAdvisory => 1,
+        CandidateKind::FeedArticle => 2,
+        CandidateKind::CrateRelease => 3,
+    }
+}
+
+fn source_role(kind: CandidateKind) -> &'static str {
+    match kind {
+        CandidateKind::GitHubRelease | CandidateKind::SecurityAdvisory => "primary source",
+        CandidateKind::FeedArticle => "related source",
+        CandidateKind::CrateRelease => "supporting publication",
+    }
+}
+
+fn source_context(candidate: &Candidate) -> String {
+    if candidate.kind == CandidateKind::CrateRelease {
+        let version = candidate
+            .metadata
+            .get("version")
+            .or_else(|| candidate.metadata.get("num"))
+            .map(String::as_str)
+            .unwrap_or("the tracked version");
+        return format!(
+            "Publication confirmation: `{}` was published to crates.io. Use the primary release notes or project article to understand what changed.",
+            version
+        );
+    }
+
+    let raw = candidate
+        .raw_content
+        .as_deref()
+        .or(candidate.summary.as_deref())
+        .unwrap_or("No source summary was provided.");
+    extract_source_excerpt(raw, 2_400).unwrap_or_else(|| "No source summary was provided.".to_owned())
+}
+
+pub fn extract_source_excerpt(raw: &str, max_chars: usize) -> Option<String> {
+    let normalized = raw.replace("\r\n", "\n");
+    let mut paragraphs = Vec::new();
+    let mut current = Vec::new();
+
+    for line in normalized.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join(" "));
+                current.clear();
+            }
+            continue;
+        }
+        if trimmed.starts_with("<!--") || trimmed.starts_with("![") {
+            continue;
+        }
+        if trimmed.starts_with('#') && !paragraphs.is_empty() {
+            break;
+        }
+        current.push(trimmed.to_owned());
+    }
+
+    if !current.is_empty() {
+        paragraphs.push(current.join(" "));
+    }
+
+    let mut output = String::new();
+    for paragraph in paragraphs {
+        let paragraph = paragraph.trim();
+        if paragraph.is_empty() {
+            continue;
+        }
+        if !output.is_empty() {
+            output.push_str("\n\n");
+        }
+        if output.len() + paragraph.len() > max_chars {
+            let remaining = max_chars.saturating_sub(output.len());
+            if remaining > 80 {
+                output.push_str(paragraph.chars().take(remaining).collect::<String>().trim_end());
+                output.push('…');
+            }
+            break;
+        }
+        output.push_str(paragraph);
+    }
+
+    if output.trim().is_empty() {
+        None
+    } else {
+        Some(output)
+    }
 }
 
 fn render_metadata(metadata: &BTreeMap<String, String>) -> String {
@@ -899,7 +1051,6 @@ mod tests {
     use crate::{
         config::PublishingConfig,
         domain::{Candidate, CandidateKind},
-        github_issues::{GitHubIssue, GitHubIssueLabel},
     };
 
     #[test]
@@ -982,4 +1133,5 @@ mod tests {
         assert!(!labels.contains(&publishing.new_status_label));
         assert!(labels.contains(&"type:article".to_owned()));
     }
+
 }

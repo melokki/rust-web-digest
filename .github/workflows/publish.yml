@@ -1,6 +1,10 @@
 name: Publish Rust Web Digest
 
 on:
+  schedule:
+    - cron: "37 4 2 * *"
+      timezone: "Europe/Bucharest"
+
   workflow_dispatch:
     inputs:
       month:
@@ -44,10 +48,10 @@ on:
 
 permissions:
   contents: write
-  issues: read
+  issues: write
 
 concurrency:
-  group: publish-rust-web-digest-${{ inputs.month }}
+  group: publish-rust-web-digest
   cancel-in-progress: false
 
 jobs:
@@ -64,21 +68,61 @@ jobs:
       - name: Build publisher
         run: cargo build --release
 
+      - name: Resolve publication parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_MONTH: ${{ inputs.month }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_AI_DRAFTING: ${{ inputs.ai_drafting }}
+          INPUT_AI_FAILURE_POLICY: ${{ inputs.ai_failure_policy }}
+          INPUT_RELEASE_STATE: ${{ inputs.release_state }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            MONTH="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
+            MODE="automatic"
+            AI_DRAFTING="false"
+            AI_FAILURE_POLICY="fallback"
+            RELEASE_STATE="published"
+            DRY_RUN="false"
+          else
+            MONTH="$INPUT_MONTH"
+            MODE="$INPUT_MODE"
+            AI_DRAFTING="$INPUT_AI_DRAFTING"
+            AI_FAILURE_POLICY="$INPUT_AI_FAILURE_POLICY"
+            RELEASE_STATE="$INPUT_RELEASE_STATE"
+            DRY_RUN="$INPUT_DRY_RUN"
+          fi
+
+          echo "month=$MONTH" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "ai_drafting=$AI_DRAFTING" >> "$GITHUB_OUTPUT"
+          echo "ai_failure_policy=$AI_FAILURE_POLICY" >> "$GITHUB_OUTPUT"
+          echo "release_state=$RELEASE_STATE" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+          echo "Publishing digest for $MONTH"
+          echo "Mode: $MODE"
+          echo "AI drafting: $AI_DRAFTING"
+          echo "Release state: $RELEASE_STATE"
+          echo "Dry run: $DRY_RUN"
+
       - name: Restore AI draft cache
-        if: ${{ inputs.ai_drafting }}
+        if: ${{ steps.params.outputs.ai_drafting == 'true' }}
         uses: actions/cache@v4
         with:
           path: data/ai-drafts
-          key: rust-web-ai-drafts-${{ inputs.month }}-${{ github.run_id }}
+          key: rust-web-ai-drafts-${{ steps.params.outputs.month }}-${{ github.run_id }}
           restore-keys: |
-            rust-web-ai-drafts-${{ inputs.month }}-
+            rust-web-ai-drafts-${{ steps.params.outputs.month }}-
 
       - name: Collect source history for automatic mode
-        if: ${{ inputs.mode == 'automatic' }}
+        if: ${{ steps.params.outputs.mode == 'automatic' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CRATES_IO_USER_AGENT: rust-web-digest/0.7 (+${{ github.server_url }}/${{ github.repository }})
-          NEWSLETTER_MONTH: ${{ inputs.month }}
+          NEWSLETTER_MONTH: ${{ steps.params.outputs.month }}
         run: |
           TARGET_START="$(date -u -d "${NEWSLETTER_MONTH}-01 -15 days" +%s)"
           NOW="$(date -u +%s)"
@@ -97,10 +141,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          NEWSLETTER_MONTH: ${{ inputs.month }}
-          COMPOSE_MODE: ${{ inputs.mode }}
-          AI_DRAFTING: ${{ inputs.ai_drafting }}
-          AI_FAILURE_POLICY: ${{ inputs.ai_failure_policy }}
+          NEWSLETTER_MONTH: ${{ steps.params.outputs.month }}
+          COMPOSE_MODE: ${{ steps.params.outputs.mode }}
+          AI_DRAFTING: ${{ steps.params.outputs.ai_drafting }}
+          AI_FAILURE_POLICY: ${{ steps.params.outputs.ai_failure_policy }}
         run: |
           ARGS=(
             compose
@@ -118,9 +162,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          NEWSLETTER_MONTH: ${{ inputs.month }}
-          RELEASE_STATE: ${{ inputs.release_state }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          NEWSLETTER_MONTH: ${{ steps.params.outputs.month }}
+          RELEASE_STATE: ${{ steps.params.outputs.release_state }}
+          DRY_RUN: ${{ steps.params.outputs.dry_run }}
         run: |
           ARGS=(
             publish
@@ -134,12 +178,32 @@ jobs:
 
           ./target/release/rust-web-digest "${ARGS[@]}"
 
+      - name: Archive published editorial month
+        if: ${{ steps.params.outputs.release_state == 'published' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          NEWSLETTER_MONTH: ${{ steps.params.outputs.month }}
+          DRY_RUN: ${{ steps.params.outputs.dry_run }}
+        run: |
+          ARGS=(
+            editorial
+            archive-month
+            --month "$NEWSLETTER_MONTH"
+          )
+
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+
+          ./target/release/rust-web-digest "${ARGS[@]}"
+
       - name: Upload publication inputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rust-web-digest-${{ inputs.month }}-publication
+          name: rust-web-digest-${{ steps.params.outputs.month }}-publication
           path: |
-            content/issues/${{ inputs.month }}.md
-            data/newsletters/${{ inputs.month }}.manifest.json
+            content/issues/${{ steps.params.outputs.month }}.md
+            data/newsletters/${{ steps.params.outputs.month }}.manifest.json
           if-no-files-found: warn
